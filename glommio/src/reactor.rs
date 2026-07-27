@@ -256,6 +256,32 @@ impl Reactor {
                 // short-circuit its internal logic and return an early
                 // "success" for reads of size 0. We are therefore forced to do
                 // an actual read.
+                //
+                // The same short-circuit happens for reads at or beyond EOF, which return
+                // early at the i_size check without ever submitting a bio. Since
+                // EOPNOTSUPP comes from the block layer, probing a file that is smaller
+                // than the read size would always "succeed", and we would wrongly mark a
+                // non-pollable device as pollable. If the file can't back a real read,
+                // skip the probe and don't record a verdict for the device, so that a
+                // later open of a large enough file can settle it.
+                //
+                // The statx is issued after the cache lookup so it is only paid on the
+                // first open of each device.
+                let file_size = {
+                    let source = self.statx(raw);
+                    if source.collect_rw().await.is_err() {
+                        // Can't establish the file size, so don't probe and don't cache.
+                        return false;
+                    }
+                    let st: Result<Statx, _> = source.extract_source_type().try_into();
+                    match st {
+                        Ok(st) => st.stx_size,
+                        Err(_) => return false,
+                    }
+                };
+                if file_size < alignment {
+                    return false;
+                }
 
                 let source =
                     self.new_source(raw, SourceType::Read(PollableStatus::Pollable, None), None);
