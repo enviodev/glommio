@@ -27,6 +27,25 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only hook, run on a foreign thread while it is part-way through
+    /// dropping a waker, so tests can make the owner thread act inside that
+    /// window deterministically.
+    pub(crate) static FOREIGN_DROP_WAKER_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[inline]
+fn foreign_drop_waker_hook() {
+    #[cfg(test)]
+    FOREIGN_DROP_WAKER_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook()
+        }
+    });
+}
+
 /// The vtable for a task.
 pub(crate) struct TaskVTable {
     /// Schedules the task.
@@ -300,17 +319,34 @@ where
 
             if Self::thread_id() != Some(raw.my_id()) {
                 dbg_context!(ptr, "foreign", {
-                    // In case the task complete before the last foreign waker
-                    // is dropped, schedule it once more to ensure the task
-                    // will be destroyed
-                    if Self::decrement_references(&*(raw.header as *mut Header)) == 0 {
-                        let notifier = raw.notifier();
-                        notifier.queue_waker(
-                            Waker::from_raw(Self::clone_waker(ptr)),
-                            (*raw.header).latency_matters,
-                        );
+                    // Never take the count to zero off the owner thread. If we
+                    // did, the owner could free the task (e.g. by dropping its
+                    // `JoinHandle`) before we re-increment it to send the waker
+                    // home, and we would then touch freed memory. Instead, the
+                    // last reference is handed home as-is and the owner thread
+                    // drops it there, which also destroys a completed task.
+                    let header = &*(raw.header as *mut Header);
+                    let mut refs = header.references.load(Ordering::Acquire);
+                    loop {
+                        assert_ne!(refs, 0, "Waker invariant broken: {header:?}");
+                        if refs == 1 {
+                            foreign_drop_waker_hook();
+                            raw.notifier().queue_waker(
+                                Waker::from_raw(RawWaker::new(ptr, &Self::RAW_WAKER_VTABLE)),
+                                header.latency_matters,
+                            );
+                            return;
+                        }
+                        match header.references.compare_exchange_weak(
+                            refs,
+                            refs - 1,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        ) {
+                            Ok(_) => return,
+                            Err(actual) => refs = actual,
+                        }
                     }
-                    return;
                 });
             }
 
