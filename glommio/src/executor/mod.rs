@@ -3707,14 +3707,14 @@ mod test {
         ex2.join().unwrap();
     }
 
-    // A waker dropped on a foreign thread must not race with the owner thread
-    // dropping the `JoinHandle` of a completed task. The hook parks the foreign
-    // thread part-way through `drop_waker` while the owner drops the handle,
-    // which is the interleaving behind the "Waker invariant broken ... refcount:
-    // -1" panics and the GPFs in `drop_waker`.
-    //
-    // Without the fix the use-after-free is only reliably detected under ASAN
-    // (`RUSTFLAGS=-Zsanitizer=address`); a plain build may pass silently.
+    /// A waker dropped on a foreign thread must not race with the owner thread
+    /// dropping the `JoinHandle` of a completed task. The hook parks the foreign
+    /// thread part-way through `drop_waker` while the owner drops the handle,
+    /// which is the interleaving behind the "Waker invariant broken ... refcount:
+    /// -1" panics and the GPFs in `drop_waker`.
+    ///
+    /// Without the fix the use-after-free is only reliably detected under ASAN
+    /// (`RUSTFLAGS=-Zsanitizer=address`); a plain build may pass silently.
     #[test]
     fn foreign_drop_waker_races_join_handle_drop() {
         let (waker_tx, waker_rx) = std::sync::mpsc::channel::<Waker>();

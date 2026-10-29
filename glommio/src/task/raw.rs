@@ -36,6 +36,8 @@ thread_local! {
         std::cell::RefCell::new(None);
 }
 
+/// Runs `FOREIGN_DROP_WAKER_HOOK` for the current thread, if one is set.
+/// Compiles to nothing outside of tests.
 #[inline]
 fn foreign_drop_waker_hook() {
     #[cfg(test)]
@@ -308,10 +310,13 @@ where
 
     /// Drops a waker.
     ///
-    /// This function will decrement the reference count. If it drops to
-    /// zero, the associated join handle has been dropped too, and the task
-    /// has not been completed, then it will get scheduled one more time so
-    /// that its future gets dropped by the executor.
+    /// On the owner thread, this decrements the reference count. If it drops
+    /// to zero and the associated join handle has been dropped too, a task
+    /// that has not completed gets scheduled one more time so that its future
+    /// gets dropped by the executor; a completed one is destroyed.
+    ///
+    /// On any other thread, the count is never taken to zero: the last
+    /// reference is sent back to the owner thread, which drops it there.
     #[inline]
     unsafe fn drop_waker(ptr: *const ()) {
         dbg_context!(ptr, "drop_waker", {
