@@ -312,8 +312,9 @@ where
     ///
     /// On the owner thread, this decrements the reference count. If it drops
     /// to zero and the associated join handle has been dropped too, a task
-    /// that has not completed gets scheduled one more time so that its future
-    /// gets dropped by the executor; a completed one is destroyed.
+    /// that is neither completed nor closed gets scheduled one more time so
+    /// that its future gets dropped by the executor; a completed or closed
+    /// one is destroyed.
     ///
     /// On any other thread, the count is never taken to zero: the last
     /// reference is sent back to the owner thread, which drops it there.
