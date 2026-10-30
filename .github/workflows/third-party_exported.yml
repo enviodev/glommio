@@ -3,9 +3,9 @@ name: Third-party licences
 permissions: write-all
 
 on:
+  # Every PR, including ones stacked on other PR branches; default activity
+  # types (opened, synchronize, reopened).
   pull_request:
-    branches: [ envio ]
-    types: [ "opened", "synchronize" ]
   push:
     branches: [ envio ]
 

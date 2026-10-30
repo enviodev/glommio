@@ -120,9 +120,10 @@ impl Latch {
             new
         };
 
-        // the Mutex synchronizes, so using `Ordering::Relaxed` here
         // `fetch_update` is deprecated in favour of `try_update` on newer Rust;
         // keep it for older toolchains.
+        //
+        // the Mutex synchronizes, so using `Ordering::Relaxed` here
         #[allow(deprecated)]
         let res = self
             .inner
