@@ -382,7 +382,7 @@ impl DmaFile {
             pos,
             self.pollable,
         );
-        enhanced_try!(source.collect_rw().await, "Writing", self.file).map_err(Into::into)
+        enhanced_try!(source.collect_rw().await, "Writing", self.file)
     }
 
     /// Equivalent to [`DmaFile::write_at`] except that the caller retains
@@ -442,7 +442,7 @@ impl DmaFile {
             pos,
             self.pollable,
         );
-        enhanced_try!(source.collect_rw().await, "Writing", self.file).map_err(Into::into)
+        enhanced_try!(source.collect_rw().await, "Writing", self.file)
     }
 
     /// Reads from a specific position in the file and returns the buffer.
@@ -771,6 +771,8 @@ impl DmaFile {
     /// NOTE: Clones are allowed to exist on any thread and all share the same underlying
     /// fd safely. try_take_last_clone is also safe to invoke from any thread and will
     /// behave correctly with respect to clones on other threads.
+    // The error hands the file back to the caller, so it is as large as the file.
+    #[allow(clippy::result_large_err)]
     pub fn try_take_last_clone(mut self) -> std::result::Result<Self, Self> {
         match self.file.try_take_last_clone() {
             Ok(took) => {
@@ -789,6 +791,8 @@ impl DmaFile {
     /// if given a guard that's not for this file.
     ///
     /// NOTE: This will panic if the unlock operation fails.
+    // The error hands the file back to the caller, so it is as large as the file.
+    #[allow(clippy::result_large_err)]
     pub async fn try_take_last_clone_unlocking_guard(
         mut self,
         guard: AdvisoryLockGuard,
