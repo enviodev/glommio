@@ -14,6 +14,7 @@ on:
 jobs:
   doc:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -34,6 +35,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -47,6 +49,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # Normal runs take a few minutes; fail a hung run fast rather than at
+    # GitHub's 6-hour default.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
