@@ -74,6 +74,9 @@ mod hyper_compat {
         }
     }
 
+    // A hyper `Timer` adapter for glommio, kept for reference; this example
+    // doesn't configure one.
+    #[allow(dead_code)]
     struct GlommioSleep(glommio::timer::Timer);
 
     impl Future for GlommioSleep {
@@ -91,6 +94,7 @@ mod hyper_compat {
     unsafe impl Send for GlommioSleep {}
     unsafe impl Sync for GlommioSleep {}
 
+    #[allow(dead_code)]
     #[derive(Clone, Copy, Debug)]
     pub struct GlommioTimer;
 

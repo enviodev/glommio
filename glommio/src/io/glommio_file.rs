@@ -289,6 +289,8 @@ impl GlommioFile {
         }
     }
 
+    // The error hands the file back to the caller, so it is as large as the file.
+    #[allow(clippy::result_large_err)]
     pub(crate) async fn try_take_last_clone_unlocking_guard(
         self,
         guard: OwnedGlommioFile,
@@ -750,10 +752,10 @@ pub(crate) mod test {
                 files
             };
 
-            assert!(file_list().iter().any(|x| *x == gf_fd)); // sanity check that file is open
+            assert!(file_list().contains(&gf_fd)); // sanity check that file is open
             let _ = { gf }; // moves scope and drops
             sleep(Duration::from_millis(10)).await; // forces the reactor to run, which will drop the file
-            assert!(!file_list().iter().any(|x| *x == gf_fd)); // file is gone
+            assert!(!file_list().contains(&gf_fd)); // file is gone
         });
     }
 }

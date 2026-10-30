@@ -3,11 +3,13 @@ name: Third-party licences
 permissions: write-all
 
 on:
+  # Every PR, including ones stacked on other PR branches. `edited` covers a
+  # PR being retargeted to another base branch; it also re-runs on title or
+  # description edits, which is cheap.
   pull_request:
-    branches: [ master ]
-    types: [ "opened", "synchronize" ]
+    types: [ opened, synchronize, reopened, edited ]
   push:
-    branches: [ master ]
+    branches: [ envio ]
 
 jobs:
   allowed:
