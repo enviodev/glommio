@@ -27,12 +27,16 @@ use crate::{
     },
 };
 
+/// Test-only hook type for `FOREIGN_DROP_WAKER_HOOK`; takes the task pointer.
+#[cfg(test)]
+pub(crate) type ForeignDropWakerHook = Box<dyn FnMut(*const ())>;
+
 #[cfg(test)]
 thread_local! {
     /// Test-only hook, run on a foreign thread while it is part-way through
     /// dropping a waker of the task at the given pointer, so tests can make
     /// the owner thread act inside that window deterministically.
-    pub(crate) static FOREIGN_DROP_WAKER_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(*const ())>>> =
+    pub(crate) static FOREIGN_DROP_WAKER_HOOK: std::cell::RefCell<Option<ForeignDropWakerHook>> =
         std::cell::RefCell::new(None);
 
     /// Test-only record of the tasks destroyed on this thread, by pointer, so
@@ -462,7 +466,7 @@ where
             #[cfg(feature = "debugging")]
             TaskDebugger::unregister(ptr);
             #[cfg(test)]
-            DESTROYED_TASKS.with(|destroyed| destroyed.borrow_mut().push(ptr));
+            let _ = DESTROYED_TASKS.try_with(|destroyed| destroyed.borrow_mut().push(ptr));
 
             let raw = Self::from_ptr(ptr);
             let task_layout = Self::task_layout();
