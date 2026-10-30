@@ -3713,22 +3713,24 @@ mod test {
     /// which is the interleaving behind the "Waker invariant broken ... refcount:
     /// -1" panics and the GPFs in `drop_waker`.
     ///
-    /// Without the fix the use-after-free is only reliably detected under ASAN
-    /// (`RUSTFLAGS=-Zsanitizer=address`); a plain build may pass silently.
+    /// The test also checks that the task is destroyed exactly once, on the
+    /// owner thread, which catches a leaked or double-dropped reference in any
+    /// build. Without the fix, the use-after-free itself is only reliably
+    /// detected under ASAN (`RUSTFLAGS=-Zsanitizer=address`).
     #[test]
     fn foreign_drop_waker_races_join_handle_drop() {
         let (waker_tx, waker_rx) = std::sync::mpsc::channel::<Waker>();
         let task_done = Arc::new(std::sync::Barrier::new(2));
         let in_window = Arc::new(std::sync::Barrier::new(2));
         let handle_dropped = Arc::new(std::sync::Barrier::new(2));
-        let hook_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hooked_task = Arc::new(AtomicUsize::new(0));
 
         let foreign = std::thread::spawn(
-            enclose! { (task_done, in_window, handle_dropped, hook_ran) move || {
+            enclose! { (task_done, in_window, handle_dropped, hooked_task) move || {
                 let waker = waker_rx.recv().unwrap();
                 crate::task::raw::FOREIGN_DROP_WAKER_HOOK.with(|hook| {
-                    *hook.borrow_mut() = Some(Box::new(move || {
-                        hook_ran.store(true, Ordering::Relaxed);
+                    *hook.borrow_mut() = Some(Box::new(move |task| {
+                        hooked_task.store(task as usize, Ordering::Relaxed);
                         in_window.wait();
                         handle_dropped.wait();
                     }));
@@ -3761,12 +3763,18 @@ mod test {
             drop(handle);
             handle_dropped.wait();
 
-            // Let the executor process the waker the foreign thread sends home.
+            // Let the executor process the waker the foreign thread sends home,
+            // which drops the last reference and destroys the task.
             sleep(Duration::from_millis(50)).await;
+
+            let task = hooked_task.load(Ordering::Relaxed) as *const ();
+            assert!(!task.is_null(), "the foreign drop never reached the hook");
+            let destroyed = crate::task::raw::DESTROYED_TASKS
+                .with(|destroyed| destroyed.borrow().iter().filter(|&&t| t == task).count());
+            assert_eq!(destroyed, 1, "the task must be destroyed exactly once");
         });
 
         foreign.join().unwrap();
-        assert!(hook_ran.load(Ordering::Relaxed));
     }
 
     #[test]
