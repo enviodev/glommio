@@ -27,23 +27,32 @@ use crate::{
     },
 };
 
+/// Test-only hook type for `FOREIGN_DROP_WAKER_HOOK`; takes the task pointer.
+#[cfg(test)]
+pub(crate) type ForeignDropWakerHook = Box<dyn FnMut(*const ())>;
+
 #[cfg(test)]
 thread_local! {
     /// Test-only hook, run on a foreign thread while it is part-way through
-    /// dropping a waker, so tests can make the owner thread act inside that
-    /// window deterministically.
-    pub(crate) static FOREIGN_DROP_WAKER_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+    /// dropping a waker of the task at the given pointer, so tests can make
+    /// the owner thread act inside that window deterministically.
+    pub(crate) static FOREIGN_DROP_WAKER_HOOK: std::cell::RefCell<Option<ForeignDropWakerHook>> =
         std::cell::RefCell::new(None);
+
+    /// Test-only record of the tasks destroyed on this thread, by pointer, so
+    /// tests can check a task was freed exactly once.
+    pub(crate) static DESTROYED_TASKS: std::cell::RefCell<Vec<*const ()>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Runs `FOREIGN_DROP_WAKER_HOOK` for the current thread, if one is set.
 /// Compiles to nothing outside of tests.
 #[inline]
-fn foreign_drop_waker_hook() {
+fn foreign_drop_waker_hook(_ptr: *const ()) {
     #[cfg(test)]
     FOREIGN_DROP_WAKER_HOOK.with(|hook| {
         if let Some(hook) = hook.borrow_mut().as_mut() {
-            hook()
+            hook(_ptr)
         }
     });
 }
@@ -336,7 +345,7 @@ where
                     loop {
                         assert_ne!(refs, 0, "Waker invariant broken: {header:?}");
                         if refs == 1 {
-                            foreign_drop_waker_hook();
+                            foreign_drop_waker_hook(ptr);
                             raw.notifier().queue_waker(
                                 Waker::from_raw(RawWaker::new(ptr, &Self::RAW_WAKER_VTABLE)),
                                 header.latency_matters,
@@ -456,6 +465,8 @@ where
         dbg_context!(ptr, "destroy", {
             #[cfg(feature = "debugging")]
             TaskDebugger::unregister(ptr);
+            #[cfg(test)]
+            let _ = DESTROYED_TASKS.try_with(|destroyed| destroyed.borrow_mut().push(ptr));
 
             let raw = Self::from_ptr(ptr);
             let task_layout = Self::task_layout();

@@ -3713,32 +3713,32 @@ mod test {
     /// which is the interleaving behind the "Waker invariant broken ... refcount:
     /// -1" panics and the GPFs in `drop_waker`.
     ///
-    /// Without the fix the use-after-free is only reliably detected under ASAN
-    /// (`RUSTFLAGS=-Zsanitizer=address`); a plain build may pass silently.
+    /// The test also checks that the task is destroyed exactly once, on the
+    /// owner thread, which catches a leaked or double-dropped reference in any
+    /// build. Without the fix, the use-after-free itself is only reliably
+    /// detected under ASAN (`RUSTFLAGS=-Zsanitizer=address`).
     #[test]
     fn foreign_drop_waker_races_join_handle_drop() {
         let (waker_tx, waker_rx) = std::sync::mpsc::channel::<Waker>();
+        // The hook sends the task pointer once the foreign thread is inside
+        // the window, so a drop that never reaches it fails instead of hanging.
+        let (in_window_tx, in_window_rx) = std::sync::mpsc::channel::<usize>();
         let task_done = Arc::new(std::sync::Barrier::new(2));
-        let in_window = Arc::new(std::sync::Barrier::new(2));
         let handle_dropped = Arc::new(std::sync::Barrier::new(2));
-        let hook_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let foreign = std::thread::spawn(
-            enclose! { (task_done, in_window, handle_dropped, hook_ran) move || {
-                let waker = waker_rx.recv().unwrap();
-                crate::task::raw::FOREIGN_DROP_WAKER_HOOK.with(|hook| {
-                    *hook.borrow_mut() = Some(Box::new(move || {
-                        hook_ran.store(true, Ordering::Relaxed);
-                        in_window.wait();
-                        handle_dropped.wait();
-                    }));
-                });
-                // Only drop once the task has finished running, so ours is the
-                // last reference and the drop takes the path under test.
-                task_done.wait();
-                drop(waker);
-            }},
-        );
+        let foreign = std::thread::spawn(enclose! { (task_done, handle_dropped) move || {
+            let waker = waker_rx.recv().unwrap();
+            crate::task::raw::FOREIGN_DROP_WAKER_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |task| {
+                    in_window_tx.send(task as usize).unwrap();
+                    handle_dropped.wait();
+                }));
+            });
+            // Only drop once the task has finished running, so ours is the
+            // last reference and the drop takes the path under test.
+            task_done.wait();
+            drop(waker);
+        }});
 
         LocalExecutor::default().run(async move {
             let polled = Rc::new(Cell::new(false));
@@ -3757,16 +3757,28 @@ mod test {
             }
             task_done.wait();
 
-            in_window.wait();
+            let task = in_window_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the foreign drop never reached the hook")
+                as *const ();
             drop(handle);
             handle_dropped.wait();
 
-            // Let the executor process the waker the foreign thread sends home.
-            sleep(Duration::from_millis(50)).await;
+            // The foreign thread now sends its waker home; processing it drops
+            // the last reference and destroys the task. Wait for that rather
+            // than for a fixed time, so a slow runner can't make this flaky.
+            let destroyed = || {
+                crate::task::raw::DESTROYED_TASKS
+                    .with(|destroyed| destroyed.borrow().iter().filter(|&&t| t == task).count())
+            };
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while destroyed() == 0 && Instant::now() < deadline {
+                sleep(Duration::from_millis(1)).await;
+            }
+            assert_eq!(destroyed(), 1, "the task must be destroyed exactly once");
         });
 
         foreign.join().unwrap();
-        assert!(hook_ran.load(Ordering::Relaxed));
     }
 
     #[test]
