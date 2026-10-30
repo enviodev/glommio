@@ -3707,6 +3707,68 @@ mod test {
         ex2.join().unwrap();
     }
 
+    /// A waker dropped on a foreign thread must not race with the owner thread
+    /// dropping the `JoinHandle` of a completed task. The hook parks the foreign
+    /// thread part-way through `drop_waker` while the owner drops the handle,
+    /// which is the interleaving behind the "Waker invariant broken ... refcount:
+    /// -1" panics and the GPFs in `drop_waker`.
+    ///
+    /// Without the fix the use-after-free is only reliably detected under ASAN
+    /// (`RUSTFLAGS=-Zsanitizer=address`); a plain build may pass silently.
+    #[test]
+    fn foreign_drop_waker_races_join_handle_drop() {
+        let (waker_tx, waker_rx) = std::sync::mpsc::channel::<Waker>();
+        let task_done = Arc::new(std::sync::Barrier::new(2));
+        let in_window = Arc::new(std::sync::Barrier::new(2));
+        let handle_dropped = Arc::new(std::sync::Barrier::new(2));
+        let hook_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let foreign = std::thread::spawn(
+            enclose! { (task_done, in_window, handle_dropped, hook_ran) move || {
+                let waker = waker_rx.recv().unwrap();
+                crate::task::raw::FOREIGN_DROP_WAKER_HOOK.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        hook_ran.store(true, Ordering::Relaxed);
+                        in_window.wait();
+                        handle_dropped.wait();
+                    }));
+                });
+                // Only drop once the task has finished running, so ours is the
+                // last reference and the drop takes the path under test.
+                task_done.wait();
+                drop(waker);
+            }},
+        );
+
+        LocalExecutor::default().run(async move {
+            let polled = Rc::new(Cell::new(false));
+            let handle = crate::spawn_local(poll_fn(enclose! { (polled) move |cx| {
+                // Leave a clone of our waker with the foreign thread and
+                // complete straight away.
+                waker_tx.send(cx.waker().clone()).unwrap();
+                polled.set(true);
+                Poll::Ready(())
+            }}))
+            .detach();
+            // Once we are polled again after the task was, its run has returned
+            // and dropped its own reference.
+            while !polled.get() {
+                crate::executor().yield_task_queue_now().await;
+            }
+            task_done.wait();
+
+            in_window.wait();
+            drop(handle);
+            handle_dropped.wait();
+
+            // Let the executor process the waker the foreign thread sends home.
+            sleep(Duration::from_millis(50)).await;
+        });
+
+        foreign.join().unwrap();
+        assert!(hook_ran.load(Ordering::Relaxed));
+    }
+
     #[test]
     fn executor_pool_builder() {
         let nr_cpus = 4;
