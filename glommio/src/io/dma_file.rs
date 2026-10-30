@@ -1344,6 +1344,38 @@ pub(crate) mod test {
         new_file.close().await.expect("failed to close file");
     });
 
+    dma_file_test!(iopoll_probe_not_cached_from_empty_file, path, kind, {
+        // The iopoll probe reads from the file being opened, but an empty file cannot
+        // back a real read: the kernel returns early at the i_size check without
+        // reaching the block layer, so the probe would record a bogus positive verdict
+        // for the device. Opening an empty file must therefore leave the verdict
+        // unset, and it must only be recorded once a file with enough data is opened.
+        //
+        // The verdict cache is thread-local and each test runs on its own executor
+        // thread, so the cache starts unset here. tmpfs is excluded because it
+        // bypasses the probe entirely.
+        if !matches!(kind, crate::test_utils::TestDirectoryKind::TempFs) {
+            let file = DmaFile::create(path.join("probefile"))
+                .await
+                .expect("failed to create file");
+            let (major, minor) = (file.dev_major() as usize, file.dev_minor() as usize);
+
+            assert_eq!(crate::sys::sysfs::BlockDevice::iopoll(major, minor), None);
+
+            let align = file.alignment() as usize;
+            let mut buf = file.alloc_dma_buffer(align);
+            buf.memset(42);
+            file.write_at(buf, 0).await.expect("failed to write");
+            file.close().await.expect("failed to close file");
+
+            let file = DmaFile::open(path.join("probefile"))
+                .await
+                .expect("failed to open file");
+            assert!(crate::sys::sysfs::BlockDevice::iopoll(major, minor).is_some());
+            file.close().await.expect("failed to close file");
+        }
+    });
+
     dma_file_test!(file_simple_readwrite, path, _k, {
         let new_file = DmaFile::create(path.join("testfile"))
             .await

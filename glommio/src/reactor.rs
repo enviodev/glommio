@@ -256,24 +256,56 @@ impl Reactor {
                 // short-circuit its internal logic and return an early
                 // "success" for reads of size 0. We are therefore forced to do
                 // an actual read.
+                //
+                // The same short-circuit happens for reads at or beyond EOF, which return
+                // early at the i_size check without ever submitting a bio. Since
+                // EOPNOTSUPP comes from the block layer, probing a file that is smaller
+                // than the read size would always "succeed", and we would wrongly mark a
+                // non-pollable device as pollable. If the file can't back a real read,
+                // skip the probe and don't record a verdict for the device, so that a
+                // later open of a large enough file can settle it.
+                //
+                // The statx is issued after the cache lookup so it is only paid on the
+                // first open of each device.
+                let file_size = {
+                    let source = self.statx(raw);
+                    if source.collect_rw().await.is_err() {
+                        // Can't establish the file size, so don't probe and don't cache.
+                        return false;
+                    }
+                    let st: Result<Statx, _> = source.extract_source_type().try_into();
+                    match st {
+                        Ok(st) => st.stx_size,
+                        Err(_) => return false,
+                    }
+                };
+                if file_size < alignment {
+                    return false;
+                }
 
                 let source =
                     self.new_source(raw, SourceType::Read(PollableStatus::Pollable, None), None);
                 self.sys.read_dma(&source, 0, alignment as usize);
-                let iopoll = if let Err(err) = source.collect_rw().await {
-                    if let Some(libc::ENOTSUP) = err.raw_os_error() {
-                        false
-                    } else {
-                        // The IO requests failed, but not because the poll ring doesn't work.
-                        error!(
-                            "got unexpected error when probing iopoll support for file {path:?} \
-                             (fd: {raw}) hosted on ({major}, {minor}); the poll ring will be \
-                             disabled for this device: {err}"
-                        );
-                        false
+                let iopoll = match source.collect_rw().await {
+                    // Only a full-length read proves the iopoll path was exercised. A
+                    // short read means we hit EOF after all (the file may have been
+                    // truncated after the size check above), so don't trust it and leave
+                    // the device verdict uncached.
+                    Ok(read_size) if read_size == alignment as usize => true,
+                    Ok(_) => return false,
+                    Err(err) => {
+                        if let Some(libc::ENOTSUP) = err.raw_os_error() {
+                            false
+                        } else {
+                            // The IO requests failed, but not because the poll ring doesn't work.
+                            error!(
+                                "got unexpected error when probing iopoll support for file \
+                                 {path:?} (fd: {raw}) hosted on ({major}, {minor}); the poll ring \
+                                 will be disabled for this device: {err}"
+                            );
+                            false
+                        }
                     }
-                } else {
-                    true
                 };
                 sysfs::BlockDevice::set_iopoll_support(major, minor, iopoll);
                 iopoll
